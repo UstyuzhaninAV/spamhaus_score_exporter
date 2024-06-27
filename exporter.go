@@ -75,25 +75,20 @@ func fetchSpamhausData(domain string) (*SpamhausResponse, error) {
 }
 
 func processDomains(domains []string) {
-	mutex.Lock()
-	defer mutex.Unlock()
-
-	// Reset metrics before processing
-	spamhausScore.Reset()
-	spamhausScoreDimension.Reset()
-
 	for _, domain := range domains {
 		data, err := fetchSpamhausData(domain)
 		if err != nil {
 			log.Printf("Error fetching data for domain %s: %v", domain, err)
 			continue
 		}
+		mutex.Lock()
 		spamhausScore.With(prometheus.Labels{"domain": domain}).Set(data.Score)
 		spamhausScoreDimension.With(prometheus.Labels{"domain": domain, "dimension": "human"}).Set(data.Dimensions.Human)
 		spamhausScoreDimension.With(prometheus.Labels{"domain": domain, "dimension": "identity"}).Set(data.Dimensions.Identity)
 		spamhausScoreDimension.With(prometheus.Labels{"domain": domain, "dimension": "infra"}).Set(data.Dimensions.Infra)
 		spamhausScoreDimension.With(prometheus.Labels{"domain": domain, "dimension": "malware"}).Set(data.Dimensions.Malware)
 		spamhausScoreDimension.With(prometheus.Labels{"domain": domain, "dimension": "smtp"}).Set(data.Dimensions.SMTP)
+		mutex.Unlock()
 	}
 }
 
