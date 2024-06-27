@@ -7,7 +7,6 @@ import (
 	"io/ioutil"
 	"log"
 	"net/http"
-	"sync"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -28,7 +27,6 @@ var (
 		},
 		[]string{"domain", "dimension"},
 	)
-	mutex sync.Mutex
 )
 
 func init() {
@@ -74,41 +72,46 @@ func fetchSpamhausData(domain string) (*SpamhausResponse, error) {
 	return &spamhausResponse, nil
 }
 
-func processDomains(domains []string) {
-	for _, domain := range domains {
-		data, err := fetchSpamhausData(domain)
-		if err != nil {
-			log.Printf("Error fetching data for domain %s: %v", domain, err)
-			continue
-		}
-		mutex.Lock()
-		spamhausScore.With(prometheus.Labels{"domain": domain}).Set(data.Score)
-		spamhausScoreDimension.With(prometheus.Labels{"domain": domain, "dimension": "human"}).Set(data.Dimensions.Human)
-		spamhausScoreDimension.With(prometheus.Labels{"domain": domain, "dimension": "identity"}).Set(data.Dimensions.Identity)
-		spamhausScoreDimension.With(prometheus.Labels{"domain": domain, "dimension": "infra"}).Set(data.Dimensions.Infra)
-		spamhausScoreDimension.With(prometheus.Labels{"domain": domain, "dimension": "malware"}).Set(data.Dimensions.Malware)
-		spamhausScoreDimension.With(prometheus.Labels{"domain": domain, "dimension": "smtp"}).Set(data.Dimensions.SMTP)
-		mutex.Unlock()
+func processDomain(domain string) {
+	data, err := fetchSpamhausData(domain)
+	if err != nil {
+		log.Printf("Error fetching data for domain %s: %v", domain, err)
+		return
 	}
+	spamhausScore.With(prometheus.Labels{"domain": domain}).Set(data.Score)
+	spamhausScoreDimension.With(prometheus.Labels{"domain": domain, "dimension": "human"}).Set(data.Dimensions.Human)
+	spamhausScoreDimension.With(prometheus.Labels{"domain": domain, "dimension": "identity"}).Set(data.Dimensions.Identity)
+	spamhausScoreDimension.With(prometheus.Labels{"domain": domain, "dimension": "infra"}).Set(data.Dimensions.Infra)
+	spamhausScoreDimension.With(prometheus.Labels{"domain": domain, "dimension": "malware"}).Set(data.Dimensions.Malware)
+	spamhausScoreDimension.With(prometheus.Labels{"domain": domain, "dimension": "smtp"}).Set(data.Dimensions.SMTP)
 }
 
-func domainsHandler(w http.ResponseWriter, r *http.Request) {
-	targets := r.URL.Query()["target"]
-	if len(targets) == 0 {
+func probeHandler(w http.ResponseWriter, r *http.Request) {
+	target := r.URL.Query().Get("target")
+	if target == "" {
 		http.Error(w, "Missing 'target' parameter", http.StatusBadRequest)
 		return
 	}
 
-	processDomains(targets)
-	w.Write([]byte("Domains processed"))
+	// Reset metrics before processing the new target
+	spamhausScore.Reset()
+	spamhausScoreDimension.Reset()
+
+	processDomain(target)
+
+	// Serve metrics
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(spamhausScore)
+	reg.MustRegister(spamhausScoreDimension)
+	h := promhttp.HandlerFor(reg, promhttp.HandlerOpts{})
+	h.ServeHTTP(w, r)
 }
 
 func main() {
 	port := flag.String("web.listen-address", "8080", "Address to listen on for web interface and telemetry.")
 	flag.Parse()
 
-	http.Handle("/metrics", promhttp.Handler())
-	http.HandleFunc("/probe", domainsHandler)
+	http.HandleFunc("/probe", probeHandler)
 
 	log.Printf("Beginning to serve on port :%s", *port)
 	log.Fatal(http.ListenAndServe(fmt.Sprintf(":%s", *port), nil))
